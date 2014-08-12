@@ -11,12 +11,14 @@ namespace Nuget.Server.AzureStorage
     using Microsoft.WindowsAzure;
     using Microsoft.WindowsAzure.Storage;
     using Microsoft.WindowsAzure.Storage.Blob;
+    using Ninject;
     using Nuget.Server.AzureStorage.Domain.Services;
     using Nuget.Server.AzureStorage.Doman.Entities;
     using NuGet;
     using NuGet.Server.DataServices;
     using NuGet.Server.Infrastructure;
     using System;
+    using System.Collections.Concurrent;
     using System.Collections.Generic;
     using System.Linq;
     using System.Runtime.Versioning;
@@ -35,6 +37,17 @@ namespace Nuget.Server.AzureStorage
         /// The BLOB client
         /// </summary>
         private readonly CloudBlobClient blobClient;
+
+        /// <summary>
+        /// Cache for derived data for each package
+        /// </summary>
+        private static readonly ConcurrentDictionary<string, DerivedPackageData> DerivedDataCache = new ConcurrentDictionary<string, DerivedPackageData>();
+
+        /// <summary>
+        /// HashProvider to calculate the hash of the package
+        /// </summary>
+        [Inject]
+        public IHashProvider HashProvider { get; set; }
 
         /// <summary>
         /// The package locator
@@ -75,7 +88,58 @@ namespace Nuget.Server.AzureStorage
         /// <returns></returns>
         public Package GetMetadataPackage(IPackage package)
         {
-            return new Package(package, new DerivedPackageData());
+            if (package == null)
+                return null;
+            var pkg = new Package(package, CalculateDerivedData(package));
+
+            //pkg.IsLatestVersion = package.IsLatestVersion;
+            //pkg.IsAbsoluteLatestVersion = package.IsAbsoluteLatestVersion;
+
+            return pkg;
+        }
+
+         private DerivedPackageData CalculateDerivedData(IPackage package) 
+        {
+            DerivedPackageData derivedPackageData;
+
+            if (DerivedDataCache.TryGetValue(package.Id, out derivedPackageData)) 
+            {
+                return derivedPackageData;
+            }
+
+            var blob = this.GetLatestBlobForPackage(package);
+
+            long length = 0;
+            byte[] inArray;
+            using (var stream = blob.OpenRead()) 
+            {
+                length = stream.Length;
+                inArray = this.HashProvider.CalculateHash(stream);
+            }
+
+            derivedPackageData = new DerivedPackageData 
+            {
+                PackageSize = length,
+                PackageHash = Convert.ToBase64String(inArray),
+                LastUpdated = blob.Properties.LastModified ?? default(DateTimeOffset),
+                Created = blob.Properties.LastModified ?? default(DateTimeOffset),
+                Path = blob.Uri.ToString(),
+                FullPath = blob.Uri.ToString(),
+                IsAbsoluteLatestVersion = package.IsAbsoluteLatestVersion,
+                IsLatestVersion = package.IsLatestVersion
+            };
+
+            DerivedDataCache.AddOrUpdate(package.Id, derivedPackageData, (key, old) => derivedPackageData);
+
+            return derivedPackageData;
+        }
+
+        public CloudBlockBlob GetLatestBlobForPackage(IPackage package)
+        {
+            var containerName = this.packageLocator.GetContainerName(package);
+            var container = this.blobClient.GetContainerReference(containerName);
+            var blob = this.GetLatestBlob(container);
+            return blob;
         }
 
         /// <summary>
@@ -108,10 +172,12 @@ namespace Nuget.Server.AzureStorage
         /// <exception cref="System.NotImplementedException"></exception>
         public IQueryable<IPackage> Search(string searchTerm, IEnumerable<string> targetFrameworks, bool allowPrereleaseVersions)
         {
-            return (
+            var pkgs = (
                 from p in this.GetPackages().Find(searchTerm).FilterByPrerelease(allowPrereleaseVersions)
                 where p.Listed
                 select p).AsQueryable<IPackage>();
+
+            return pkgs;
         }
 
         /// <summary>
@@ -141,10 +207,12 @@ namespace Nuget.Server.AzureStorage
         /// <returns></returns>
         public IQueryable<IPackage> GetPackages()
         {
-            return this.blobClient
+            var pkgs = this.blobClient
                 .ListContainers()
                 .Select(x => this.packageSerializer.ReadFromMetadata(this.GetLatestBlob(x)))
                 .AsQueryable<IPackage>();
+
+            return pkgs;
         }
 
         /// <summary>
@@ -246,9 +314,17 @@ namespace Nuget.Server.AzureStorage
         private CloudBlockBlob GetLatestBlob(CloudBlobContainer container)
         {
             container.FetchAttributes();
-            var latest = container.Metadata[AzurePropertiesConstants.LastUploadedVersion];
+            try
+            {
+                var latest = container.Metadata[AzurePropertiesConstants.LastUploadedVersion];
+                return container.GetBlockBlobReference(latest);
 
-            return container.GetBlockBlobReference(latest);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+
         }
     }
 }

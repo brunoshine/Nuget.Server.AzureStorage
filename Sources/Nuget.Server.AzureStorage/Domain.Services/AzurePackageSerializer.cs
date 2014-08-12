@@ -19,6 +19,11 @@ namespace Nuget.Server.AzureStorage.Domain.Services
     {
         public AzurePackage ReadFromMetadata(CloudBlockBlob blob)
         {
+            if(blob == null)
+            {
+                return null;
+            }
+
             blob.FetchAttributes();
             var package = new AzurePackage();
 
@@ -78,51 +83,54 @@ namespace Nuget.Server.AzureStorage.Domain.Services
                 package.MinClientVersion = new Version(blob.Metadata["MinClientVersion"]);
             }
             package.Listed = blob.Metadata["Listed"].ToBool();
+            package.Published = DateTimeOffset.Parse(blob.Metadata["Published"]);
 
             return package;
         }
 
         public void SaveToMetadata(AzurePackage package, CloudBlockBlob blob)
         {
-            blob.Metadata["Id"] = package.Id;
-            blob.Metadata["Version"] = package.Version.ToString();
-            if (!string.IsNullOrEmpty(package.Title))
-            {
-                blob.Metadata["Title"] = package.Title;
-            }
-            blob.Metadata["Authors"] = string.Join(",", package.Authors);
-            blob.Metadata["Owners"] = string.Join(",", package.Owners);
+            SetMetadataValue(blob, "Id", package.Id);
+            SetMetadataValue(blob,"Version" ,package.Version);
+            SetMetadataValue(blob, "Title", package.Title);
+            SetMetadataValue(blob,"Authors",string.Join(",", package.Authors));
+            SetMetadataValue(blob,"Owners" ,string.Join(",", package.Owners));
             if (package.IconUrl != null)
-            {
-                blob.Metadata["IconUrl"] = package.IconUrl.AbsoluteUri;
-            }
+                SetMetadataValue(blob,"IconUrl",package.IconUrl.AbsoluteUri);
             if (package.LicenseUrl != null)
-            {
-                blob.Metadata["LicenseUrl"] = package.LicenseUrl.AbsoluteUri;
-            }
+                SetMetadataValue(blob,"LicenseUrl",package.LicenseUrl.AbsoluteUri);
             if (package.ProjectUrl != null)
+                SetMetadataValue(blob,"ProjectUrl",package.ProjectUrl.AbsoluteUri);
+            SetMetadataValue(blob,"RequireLicenseAcceptance",package.RequireLicenseAcceptance);
+            SetMetadataValue(blob,"DevelopmentDependency",package.DevelopmentDependency);
+            SetMetadataValue(blob,"Description",package.Description);
+            SetMetadataValue(blob,"Summary",package.Summary);
+            SetMetadataValue(blob,"ReleaseNotes",package.ReleaseNotes);
+            SetMetadataValue(blob,"Tags",package.Tags);
+            SetMetadataValue(blob,"Dependencies",this.Base64Encode(package.DependencySets.Select(Mapper.Map<AzurePackageDependencySet>).ToJson()));
+            SetMetadataValue(blob,"IsAbsoluteLatestVersion",package.IsAbsoluteLatestVersion);
+            SetMetadataValue(blob,"IsLatestVersion",package.IsLatestVersion);
+            SetMetadataValue(blob,"MinClientVersion",package.MinClientVersion);
+            SetMetadataValue(blob, "Listed", package.Listed);
+            SetMetadataValue(blob, "Published", DateTime.UtcNow);
+            try
             {
-                blob.Metadata["ProjectUrl"] = package.ProjectUrl.AbsoluteUri;
-            }
-            blob.Metadata["RequireLicenseAcceptance"] = package.RequireLicenseAcceptance.ToString();
-            blob.Metadata["DevelopmentDependency"] = package.DevelopmentDependency.ToString();
-            blob.Metadata["Description"] = package.Description;
-            if (!string.IsNullOrEmpty(package.Summary))
-            {
-                blob.Metadata["Summary"] = package.Summary;
-            }
-            blob.Metadata["ReleaseNotes"] = package.ReleaseNotes;
-            if (!string.IsNullOrEmpty(package.Tags))
-            {
-                blob.Metadata["Tags"] = package.Tags;
-            }
-            blob.Metadata["Dependencies"] = this.Base64Encode(package.DependencySets.Select(Mapper.Map<AzurePackageDependencySet>).ToJson());
-            blob.Metadata["IsAbsoluteLatestVersion"] = package.IsAbsoluteLatestVersion.ToString();
-            blob.Metadata["IsLatestVersion"] = package.IsLatestVersion.ToString();
-            blob.Metadata["MinClientVersion"] = package.MinClientVersion.ToString();
-            blob.Metadata["Listed"] = package.Listed.ToString();
+                blob.SetMetadata();
 
-            blob.SetMetadata();
+            }
+            catch (Exception ex)
+            {
+                
+                throw;
+            }
+        }
+
+        private void SetMetadataValue(CloudBlockBlob blob, string key, object value)
+        {
+            if (value != null && !string.IsNullOrEmpty(value.ToString()))
+            {
+                blob.Metadata[key] = value.ToString();
+            }
         }
 
         private string Base64Encode(string plainText)
